@@ -209,6 +209,38 @@ Every write result lists the @words it could not resolve under
 `unresolved_mentions`; they were sent as plain text. If the list is not
 empty, check it before you rely on the message.
 
+### Linked references
+
+`send`, `reply` and `edit` also turn bare issue and pull request references
+into links. `--no-linkify` turns this off for one command.
+
+| You write | It links to | Needs |
+|---|---|---|
+| `owner/repo#42` | `https://github.com/owner/repo/issues/42` | nothing |
+| `repo#42` | `https://github.com/<github_org>/repo/issues/42` | `github_org` |
+| `EXP-61` | `https://linear.app/<linear_workspace>/issue/EXP-61` | `linear_workspace`, `EXP` in `linear_teams` |
+
+The text stays as you wrote it and becomes the link's label. GitHub
+redirects `/issues/N` to `/pull/N` when N is a pull request.
+
+References are never linked inside `` `code` ``, code blocks, existing
+`<…>` links or mentions, `[label](url)` links, or bare URLs. A reference
+must stand alone, so `x/frontend#1`, `v1.EXP-2` and `EXP-1y` stay text.
+The write result lists what was linked:
+`"links": [{"text": "EXP-61", "url": "https://linear.app/…/issue/EXP-61"}]`.
+
+Configure it in `~/.config/slk/config.toml`:
+
+```toml
+[agent]
+github_org = "your-org"            # owner for a bare repo#N
+linear_workspace = "your-workspace" # linear.app/<workspace>
+linear_teams = ["EXP", "FRO"]       # team keys whose TEAM-N ids link
+```
+
+With no `[agent]` block, only `owner/repo#N` links. This means `UTF-8` and
+`ISO-8601` are never mistaken for Linear issues.
+
 Pass `-` instead of the text to read it from stdin. This is the safe choice
 for anything long or full of quotes:
 

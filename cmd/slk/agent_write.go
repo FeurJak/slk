@@ -1,7 +1,8 @@
 // This file holds the agent write commands: send, reply, react, edit
 // and delete. Text goes through the composer's own mention translation
-// (compose.Model.TranslateMentionsForSend) and then the same
-// conversion every send uses (slackclient.ConvertMessage). --dry-run
+// (compose.Model.TranslateMentionsForSend), reference linkifying
+// (reflink.Linkify, unless --no-linkify) and then the same conversion
+// every send uses (slackclient.ConvertMessage). --dry-run
 // prints the payload and sends nothing. No command has a default
 // target: the channel or permalink is always spelled out.
 
@@ -13,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/gammons/slk/internal/bubbles/channelpicker"
+	"github.com/gammons/slk/internal/reflink"
 	slackclient "github.com/gammons/slk/internal/slack"
 	"github.com/gammons/slk/internal/slackurl"
 	"github.com/gammons/slk/internal/ui/compose"
@@ -125,35 +127,62 @@ func (s *agentSession) loadUserGroups(ctx context.Context) map[string]string {
 // agentWriteResult is what every write command prints. A dry run has
 // DryRun set, no TS for a new message, and the blocks it would send.
 type agentWriteResult struct {
-	OK                 bool          `json:"ok"`
-	DryRun             bool          `json:"dry_run,omitempty"`
-	Action             string        `json:"action"`
-	Method             string        `json:"method"`
-	ChannelID          string        `json:"channel_id"`
-	TS                 string        `json:"ts,omitempty"`
-	ThreadTS           string        `json:"thread_ts,omitempty"`
-	Broadcast          bool          `json:"broadcast,omitempty"`
-	Text               string        `json:"text,omitempty"`
-	Blocks             []slack.Block `json:"blocks,omitempty"`
-	Emoji              string        `json:"emoji,omitempty"`
-	Permalink          string        `json:"permalink,omitempty"`
-	UnresolvedMentions []string      `json:"unresolved_mentions,omitempty"`
+	OK                 bool           `json:"ok"`
+	DryRun             bool           `json:"dry_run,omitempty"`
+	Action             string         `json:"action"`
+	Method             string         `json:"method"`
+	ChannelID          string         `json:"channel_id"`
+	TS                 string         `json:"ts,omitempty"`
+	ThreadTS           string         `json:"thread_ts,omitempty"`
+	Broadcast          bool           `json:"broadcast,omitempty"`
+	Text               string         `json:"text,omitempty"`
+	Blocks             []slack.Block  `json:"blocks,omitempty"`
+	Emoji              string         `json:"emoji,omitempty"`
+	Permalink          string         `json:"permalink,omitempty"`
+	UnresolvedMentions []string       `json:"unresolved_mentions,omitempty"`
+	Links              []reflink.Link `json:"links,omitempty"`
+}
+
+// composedText is message text ready for slackclient.ConvertMessage.
+type composedText struct {
+	wire       string
+	unresolved []string
+	links      []reflink.Link
+}
+
+// composeText translates text's mentions and, when linkify is set,
+// links its bare references by the [agent] config. Linkify runs second
+// so the mention tokens translation makes are spans it leaves alone.
+func (s *agentSession) composeText(ctx context.Context, text string, linkify bool) (composedText, error) {
+	wire, unresolved, err := s.translateMentions(ctx, text)
+	if err != nil {
+		return composedText{}, err
+	}
+	out := composedText{wire: wire, unresolved: unresolved}
+	if linkify {
+		a := s.cfg.Agent
+		out.wire, out.links = reflink.Linkify(wire, reflink.Rules{
+			GitHubOrg: a.GitHubOrg, LinearWorkspace: a.LinearWorkspace, LinearTeams: a.LinearTeams,
+		})
+	}
+	return out, nil
 }
 
 // postAgentMessage sends text to channelID (in threadTS's thread when
 // set) and reports it; dryRun stops before chat.postMessage.
-func (s *agentSession) postAgentMessage(ctx context.Context, action, channelID, threadTS, text string, broadcast, dryRun bool) (agentWriteResult, error) {
-	wire, unresolved, err := s.translateMentions(ctx, text)
+func (s *agentSession) postAgentMessage(ctx context.Context, action, channelID, threadTS, text string, broadcast, linkify, dryRun bool) (agentWriteResult, error) {
+	ct, err := s.composeText(ctx, text, linkify)
 	if err != nil {
 		return agentWriteResult{}, err
 	}
+	wire := ct.wire
 	mr, block, err := slackclient.ConvertMessage(wire)
 	if err != nil {
 		return agentWriteResult{}, err
 	}
 	res := agentWriteResult{
 		OK: true, Action: action, Method: "chat.postMessage", ChannelID: channelID,
-		ThreadTS: threadTS, Broadcast: broadcast, Text: mr, UnresolvedMentions: unresolved,
+		ThreadTS: threadTS, Broadcast: broadcast, Text: mr, UnresolvedMentions: ct.unresolved, Links: ct.links,
 	}
 	if dryRun {
 		res.DryRun = true
@@ -182,6 +211,7 @@ func runAgentSend(env *agentEnv, args []string) (any, error) {
 	fs, workspace := newAgentFlags(env, "send")
 	thread := fs.String("thread", "", "post as a reply in the thread whose parent has this ts")
 	broadcast := fs.Bool("broadcast", false, "with --thread, also post the reply to the channel")
+	noLinkify := fs.Bool("no-linkify", false, "leave repo#N and TEAM-N references as plain text")
 	dryRun := fs.Bool("dry-run", false, "print what would be sent and send nothing")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -208,7 +238,7 @@ func runAgentSend(env *agentEnv, args []string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.postAgentMessage(env.ctx, "send", ch.ID, *thread, text, *broadcast, *dryRun)
+	return s.postAgentMessage(env.ctx, "send", ch.ID, *thread, text, *broadcast, !*noLinkify, *dryRun)
 }
 
 // openForPermalink parses a permalink argument and connects to its
@@ -231,6 +261,7 @@ func openForPermalink(env *agentEnv, workspace, arg string) (*agentSession, stri
 func runAgentReply(env *agentEnv, args []string) (any, error) {
 	fs, workspace := newAgentFlags(env, "reply")
 	broadcast := fs.Bool("broadcast", false, "also post the reply to the channel")
+	noLinkify := fs.Bool("no-linkify", false, "leave repo#N and TEAM-N references as plain text")
 	dryRun := fs.Bool("dry-run", false, "print what would be sent and send nothing")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -252,7 +283,7 @@ func runAgentReply(env *agentEnv, args []string) (any, error) {
 	if root == "" {
 		root = ts
 	}
-	return s.postAgentMessage(env.ctx, "reply", channelID, root, text, *broadcast, *dryRun)
+	return s.postAgentMessage(env.ctx, "reply", channelID, root, text, *broadcast, !*noLinkify, *dryRun)
 }
 
 func runAgentReact(env *agentEnv, args []string) (any, error) {
@@ -301,6 +332,7 @@ func runAgentReact(env *agentEnv, args []string) (any, error) {
 
 func runAgentEdit(env *agentEnv, args []string) (any, error) {
 	fs, workspace := newAgentFlags(env, "edit")
+	noLinkify := fs.Bool("no-linkify", false, "leave repo#N and TEAM-N references as plain text")
 	dryRun := fs.Bool("dry-run", false, "print what would be sent and change nothing")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
@@ -320,16 +352,17 @@ func runAgentEdit(env *agentEnv, args []string) (any, error) {
 	if err := s.requireOwnMessage(env.ctx, channelID, ts, threadTS); err != nil {
 		return nil, err
 	}
-	wire, unresolved, err := s.translateMentions(env.ctx, text)
+	ct, err := s.composeText(env.ctx, text, !*noLinkify)
 	if err != nil {
 		return nil, err
 	}
+	wire := ct.wire
 	mr, block, err := slackclient.ConvertMessage(wire)
 	if err != nil {
 		return nil, err
 	}
 	res := agentWriteResult{OK: true, Action: "edit", Method: "chat.update", ChannelID: channelID, TS: ts, ThreadTS: threadTS,
-		Text: mr, Permalink: s.permalink(channelID, ts, threadTS), UnresolvedMentions: unresolved}
+		Text: mr, Permalink: s.permalink(channelID, ts, threadTS), UnresolvedMentions: ct.unresolved, Links: ct.links}
 	if *dryRun {
 		res.DryRun = true
 		res.Blocks = []slack.Block{block}
