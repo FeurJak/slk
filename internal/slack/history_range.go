@@ -24,15 +24,23 @@ const historyPageSize = 200
 const defaultRateLimitWait = 30 * time.Second
 
 // WaitOutRateLimit reports whether err is a Slack rate-limit error
-// and, if so, sleeps for the advised interval first. A false return
-// means err is some other failure the caller should surface. The sleep
-// is cut short, returning ctx's error, when ctx is cancelled.
+// and, if so, sleeps for the advised interval first. Both forms count:
+// slack-go's *slack.RateLimitedError and postForm's HTTP 429 from a
+// hand-rolled endpoint. A false return means err is some other failure
+// the caller should surface. The sleep is cut short, returning ctx's
+// error, when ctx is cancelled.
 func WaitOutRateLimit(ctx context.Context, err error) (bool, error) {
+	var wait time.Duration
 	var rlErr *slack.RateLimitedError
-	if !errors.As(err, &rlErr) {
+	var formErr *rateLimitError
+	switch {
+	case errors.As(err, &rlErr):
+		wait = rlErr.RetryAfter
+	case errors.As(err, &formErr):
+		wait = formErr.retryAfter
+	default:
 		return false, nil
 	}
-	wait := rlErr.RetryAfter
 	if wait == 0 {
 		wait = defaultRateLimitWait
 	}
@@ -41,6 +49,25 @@ func WaitOutRateLimit(ctx context.Context, err error) (bool, error) {
 		return true, ctx.Err()
 	case <-time.After(wait):
 		return true, nil
+	}
+}
+
+// RetryRateLimited calls fn until it returns something other than a
+// rate-limit error, waiting each one out with WaitOutRateLimit. Safe
+// for writes: Slack did not act on a call it rate-limited.
+func RetryRateLimited(ctx context.Context, fn func() error) error {
+	for {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		limited, waitErr := WaitOutRateLimit(ctx, err)
+		if waitErr != nil {
+			return waitErr
+		}
+		if !limited {
+			return err
+		}
 	}
 }
 

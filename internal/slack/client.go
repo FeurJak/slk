@@ -464,6 +464,13 @@ func (c *Client) TeamSubdomain() string {
 	return subdomainFromTeamURL(c.teamURL)
 }
 
+// TeamURL returns the workspace URL auth.test reported (e.g.
+// "https://acme.slack.com/"), the base slackurl.Build makes permalinks
+// from. Empty before Connect.
+func (c *Client) TeamURL() string {
+	return c.teamURL
+}
+
 // subdomainFromTeamURL extracts the subdomain from a workspace URL.
 // Only hosts strictly under .slack.com produce a non-empty result.
 func subdomainFromTeamURL(teamURL string) string {
@@ -981,11 +988,35 @@ func (c *Client) GetHistoryAround(ctx context.Context, channelID, ts string, lim
 // verbatim, so Slack-side modifiers (from:, in:, before:, ...) work
 // unmodified. Results are relevance-sorted (Slack's default).
 func (c *Client) SearchMessages(ctx context.Context, query string, count int) (*slack.SearchMessages, error) {
+	return c.SearchMessagesPage(ctx, query, SearchOptions{Count: count})
+}
+
+// SearchOptions are the search.messages paging and ordering knobs. A
+// zero field keeps slack-go's default (count 20, page 1, sort score,
+// sort_dir desc), which is also what leaves the key off the wire.
+type SearchOptions struct {
+	Count   int
+	Page    int
+	Sort    string // "score" or "timestamp"
+	SortDir string // "desc" or "asc"
+}
+
+// SearchMessagesPage is SearchMessages with a page and an order.
+func (c *Client) SearchMessagesPage(ctx context.Context, query string, opts SearchOptions) (*slack.SearchMessages, error) {
 	params := slack.NewSearchParameters()
 	// Non-positive counts would be forwarded to Slack as count=0;
 	// keep slack-go's default (20) instead.
-	if count > 0 {
-		params.Count = count
+	if opts.Count > 0 {
+		params.Count = opts.Count
+	}
+	if opts.Page > 0 {
+		params.Page = opts.Page
+	}
+	if opts.Sort != "" {
+		params.Sort = opts.Sort
+	}
+	if opts.SortDir != "" {
+		params.SortDirection = opts.SortDir
 	}
 	res, err := c.api.SearchMessagesContext(ctx, query, params)
 	if err != nil {
@@ -1139,11 +1170,10 @@ func (c *Client) SendMessage(ctx context.Context, channelID, text string) (strin
 // has no option for the draft fields, so a draft's post skips slack-go
 // and goes out as the hand-rolled form the chips path already sends.
 func (c *Client) postMessage(ctx context.Context, channelID, threadTS, text string, broadcast bool, ref *DraftRef) (string, string, error) {
-	block := mrkdwn.Convert(text)
-	if block == nil {
-		return "", "", fmt.Errorf("could not convert mrkdwn to block")
+	mr, block, err := ConvertMessage(text)
+	if err != nil {
+		return "", "", err
 	}
-	mr := blockkit.RichTextToMrkdwn(blockkit.RichTextBlock{Elements: block.Elements})
 	extra := ref.fields()
 	if ts, sentMr, sent, err := c.sendWithChips(ctx, channelID, threadTS, text, broadcast, block, extra); sent {
 		return ts, sentMr, err
@@ -1436,18 +1466,29 @@ func (c *Client) GetReplies(ctx context.Context, channelID, threadTS string) ([]
 // optimistic display, but the message-changed WS echo is the
 // authoritative source of truth for the displayed body).
 func (c *Client) EditMessage(ctx context.Context, channelID, ts, text string) (string, error) {
-	block := mrkdwn.Convert(text)
-	if block == nil {
-		return "", fmt.Errorf("could not convert mrkdwn to block")
+	mr, block, err := ConvertMessage(text)
+	if err != nil {
+		return "", err
 	}
-	mr := blockkit.RichTextToMrkdwn(blockkit.RichTextBlock{Elements: block.Elements})
 	opts := []slack.MsgOption{slack.MsgOptionText(mr, false)}
 	opts = append(opts, slack.MsgOptionBlocks(block))
-	_, _, _, err := c.api.UpdateMessage(channelID, ts, opts...)
+	_, _, _, err = c.api.UpdateMessage(channelID, ts, opts...)
 	if err != nil {
 		return "", fmt.Errorf("editing message: %w", err)
 	}
 	return mr, nil
+}
+
+// ConvertMessage is the text and block every send and edit posts for
+// composer text: the rich_text block mrkdwn.Convert makes of it, and
+// the mrkdwn fallback rendered back from that block. Mentions must
+// already be in wire form (<@U…>); the composer translates them first.
+func ConvertMessage(text string) (string, *slack.RichTextBlock, error) {
+	block := mrkdwn.Convert(text)
+	if block == nil {
+		return "", nil, fmt.Errorf("could not convert mrkdwn to block")
+	}
+	return blockkit.RichTextToMrkdwn(blockkit.RichTextBlock{Elements: block.Elements}), block, nil
 }
 
 // RemoveMessage deletes a message from the channel.

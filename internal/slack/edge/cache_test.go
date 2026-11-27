@@ -1550,3 +1550,27 @@ func TestBatchSizes_StayWithinObservedShapes(t *testing.T) {
 		t.Fatal("batch sizes must be positive; a zero size never flushes")
 	}
 }
+
+// TestUsersInfo_DecodesTitleTZAndTopLevelRealName pins the three keys
+// `slk users` prints that the profile dialog never needed. Their shape
+// is from live users/info and users/search answers of 2026-11-27.
+func TestUsersInfo_DecodesTitleTZAndTopLevelRealName(t *testing.T) {
+	rec := newRecorder(t, func(int) (int, string) {
+		return 200, `{"ok":true,"results":[
+			{"id":"U1","team_id":"T1","name":"grant","updated":1,
+			 "real_name":"Grant Top","tz":"America/New_York",
+			 "profile":{"display_name":"Grant","real_name":"Grant Ammons","title":"Engineer"}}
+		]}`
+	})
+	got, err := rec.client().UsersInfo(context.Background(), map[string]int64{"U1": 0})
+	if err != nil || len(got) != 1 {
+		t.Fatalf("UsersInfo = %v, %v; want one user", got, err)
+	}
+	u := got[0]
+	if u.TZ != "America/New_York" || u.RealName != "Grant Top" || u.Profile.Title != "Engineer" {
+		t.Errorf("tz %q, real_name %q, title %q; want America/New_York, Grant Top, Engineer", u.TZ, u.RealName, u.Profile.Title)
+	}
+	if u.Profile.RealName != "Grant Ammons" {
+		t.Errorf("Profile.RealName = %q; the top-level real_name must not shadow it", u.Profile.RealName)
+	}
+}

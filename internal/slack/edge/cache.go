@@ -122,9 +122,17 @@ type User struct {
 	Deleted bool   `json:"deleted"`
 	IsBot   bool   `json:"is_bot"`
 	TeamID  string `json:"team_id"`
-	Profile struct {
+	// RealName and TZ are top-level keys on both users/info and
+	// users/search results (seen live on 2026-11-27; not in the
+	// committed fixture). TZ is an IANA name, "" when Slack sent none.
+	RealName string `json:"real_name"`
+	TZ       string `json:"tz"`
+	Profile  struct {
 		DisplayName string `json:"display_name"`
 		RealName    string `json:"real_name"`
+		// Title is the profile's job title, "" when unset. Present on
+		// both endpoints alongside display_name (seen live 2026-11-27).
+		Title string `json:"title"`
 		// ImageOriginal is the user's avatar URL, an absolute one.
 		// Present and non-empty on 255 of the 291 observed users/info
 		// results, and on users/search too — 42 of 60 — so the two
