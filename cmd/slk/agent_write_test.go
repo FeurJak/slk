@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/gammons/slk/internal/config"
 )
 
 // writeOut decodes a write result; blocks stay raw, as slack.Block is
@@ -178,5 +180,71 @@ func TestAtWords(t *testing.T) {
 	got := atWords("hi @bob, mail a@b.com, <@U1>, @here @Bob. @taras.w! url/@x")
 	if strings.Join(got, "|") != "bob|taras.w" {
 		t.Errorf("atWords = %q, want bob and taras.w once each", got)
+	}
+}
+
+// linkifySession is a write session whose [agent] config links acme
+// repos and the EXP Linear team.
+func linkifySession(t *testing.T, f *agentFake) *agentSession {
+	t.Helper()
+	s := f.session(t)
+	s.cfg.Agent = config.Agent{GitHubOrg: "acme", LinearWorkspace: "acmeco", LinearTeams: []string{"EXP"}}
+	return s
+}
+
+func TestAgentSend_LinkifiesReferences(t *testing.T) {
+	f := newAgentFake(t, writeRoutes(nil))
+	var res writeOut
+	runJSON(t, linkifySession(t, f), "", &res, "send", "#general",
+		"fixed frontend#9673 and EXP-61, not `EXP-2` or https://linear.app/acmeco/issue/EXP-3", "--dry-run")
+	for _, want := range []string{
+		"<https://github.com/acme/frontend/issues/9673|frontend#9673>",
+		"<https://linear.app/acmeco/issue/EXP-61|EXP-61>",
+		"`EXP-2`",
+	} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("text %q lacks %s", res.Text, want)
+		}
+	}
+	if strings.Contains(res.Text, "issue/EXP-2") || strings.Count(res.Text, "issue/EXP-3") != 1 {
+		t.Errorf("text %q linked inside code or a URL", res.Text)
+	}
+	if len(res.Links) != 2 || res.Links[0].Text != "frontend#9673" || res.Links[1].URL != "https://linear.app/acmeco/issue/EXP-61" {
+		t.Errorf("links = %+v", res.Links)
+	}
+}
+
+func TestAgentSend_NoLinkify(t *testing.T) {
+	f := newAgentFake(t, writeRoutes(nil))
+	var res writeOut
+	runJSON(t, linkifySession(t, f), "", &res, "send", "#general", "fixed frontend#9673 and EXP-61", "--dry-run", "--no-linkify")
+	if res.Text != "fixed frontend#9673 and EXP-61" || len(res.Links) != 0 {
+		t.Errorf("text %q, links %+v; want both untouched", res.Text, res.Links)
+	}
+}
+
+func TestAgentReply_PostsLinkifiedText(t *testing.T) {
+	f := newAgentFake(t, writeRoutes(map[string]func(agentReq) string{
+		"/api/chat.postMessage": fixed(`{"ok":true,"channel":"C1","ts":"1700000400.000000"}`),
+	}))
+	var res writeOut
+	runJSON(t, linkifySession(t, f), "", &res, "reply", "https://acme.slack.com/archives/C1/p1700000300000000", "merged in gammons/slk#2, thanks @bob")
+	p := f.requests("/api/chat.postMessage")[0].form
+	if !strings.Contains(p.Get("text"), "<https://github.com/gammons/slk/issues/2|gammons/slk#2>") || !strings.Contains(p.Get("text"), "<@U2>") {
+		t.Errorf("posted text = %q", p.Get("text"))
+	}
+	if !strings.Contains(p.Get("blocks"), `"url":"https://github.com/gammons/slk/issues/2"`) {
+		t.Errorf("blocks = %s; want a link element", p.Get("blocks"))
+	}
+}
+
+func TestAgentEdit_Linkifies(t *testing.T) {
+	f := newAgentFake(t, writeRoutes(map[string]func(agentReq) string{
+		"/api/conversations.replies": fixed(`{"ok":true,"messages":[{"ts":"1700000300.000000","user":"U1","text":"old"}]}`),
+	}))
+	var res writeOut
+	runJSON(t, linkifySession(t, f), "", &res, "edit", "https://acme.slack.com/archives/D2/p1700000300000000", "see EXP-7", "--dry-run")
+	if !strings.Contains(res.Text, "<https://linear.app/acmeco/issue/EXP-7|EXP-7>") || len(res.Links) != 1 {
+		t.Errorf("text %q, links %+v", res.Text, res.Links)
 	}
 }

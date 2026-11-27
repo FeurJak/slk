@@ -52,10 +52,10 @@ func agentCommandTable() map[string]agentCommand {
 		"history":  {"history <channel> [--since T] [--until T] [--limit N] [--replies]", "Read a conversation's messages, oldest first", runAgentHistory},
 		"thread":   {"thread (<permalink> | <channel> <ts>)", "Read a thread: the parent and every reply", runAgentThread},
 		"mentions": {"mentions [--since T] [--limit N]", "Messages that mention you, your usergroups, or @channel/@here", runAgentMentions},
-		"send":     {"send <channel> (<text> | -) [--thread TS] [--broadcast] [--dry-run]", "Post a message (markdown, @name and #channel translated)", runAgentSend},
-		"reply":    {"reply <permalink> (<text> | -) [--broadcast] [--dry-run]", "Reply in the thread of a message", runAgentReply},
+		"send":     {"send <channel> (<text> | -) [--thread TS] [--broadcast] [--no-linkify] [--dry-run]", "Post a message (markdown; @name, #channel, repo#N and TEAM-N linked)", runAgentSend},
+		"reply":    {"reply <permalink> (<text> | -) [--broadcast] [--no-linkify] [--dry-run]", "Reply in the thread of a message", runAgentReply},
 		"react":    {"react <permalink> <emoji> [--remove] [--dry-run]", "Add (or remove) a reaction", runAgentReact},
-		"edit":     {"edit <permalink> (<text> | -) [--dry-run]", "Edit one of your own messages", runAgentEdit},
+		"edit":     {"edit <permalink> (<text> | -) [--no-linkify] [--dry-run]", "Edit one of your own messages", runAgentEdit},
 		"delete":   {"delete <permalink> [--dry-run]", "Delete one of your own messages", runAgentDelete},
 	}
 }

@@ -25,6 +25,19 @@ type Config struct {
 	Sections      map[string]SectionDef `toml:"sections"`
 	Theme         Theme                 `toml:"theme"`
 	Workspaces    map[string]Workspace  `toml:"workspaces"`
+	Agent         Agent                 `toml:"agent"`
+}
+
+// Agent configures the agent commands (`slk send`, `reply`, `edit`).
+// Its values say where bare references in message text link to; see
+// internal/reflink. All empty by default: then only owner/repo#N links.
+type Agent struct {
+	// GitHubOrg is the owner a bare repo#N belongs to.
+	GitHubOrg string `toml:"github_org"`
+	// LinearWorkspace is the linear.app/<workspace> path segment.
+	LinearWorkspace string `toml:"linear_workspace"`
+	// LinearTeams are the Linear team keys whose TEAM-N ids link.
+	LinearTeams []string `toml:"linear_teams"`
 }
 
 type Compose struct {
