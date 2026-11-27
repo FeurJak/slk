@@ -67,6 +67,12 @@ func main() {
 		}
 		return
 	}
+	// The agent commands (`slk search`, `slk send`, ...) print JSON and
+	// exit. They run here for the same reason --open does: they may run
+	// beside the TUI, whose debug log debuglog.Init would truncate.
+	if len(os.Args) > 1 && isAgentCommand(os.Args[1]) {
+		os.Exit(runAgent(os.Args[1], os.Args[2:]))
+	}
 
 	// Debug log: when SLK_DEBUG is set, debuglog.Init opens
 	// slk-debug.log in cwd (truncating any prior session) and routes
@@ -209,12 +215,13 @@ Usage:
   slk --version          Print version and exit
   slk --help             Show this help
 
+%s
 Config:  ~/.config/slk/config.toml
 Data:    ~/.local/share/slk/
 Cache:   ~/.cache/slk/
 
 Docs:    https://github.com/gammons/slk
-`, version)
+`, version, agentHelpText())
 }
 
 // newImageHTTPClient builds the HTTP client the avatar/thumbnail
